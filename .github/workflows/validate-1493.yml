@@ -1,0 +1,64 @@
+name: Validate forwarded identity 1493
+on:
+  push:
+    branches: [validation/1493-b72c]
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: test-only-password
+          POSTGRES_DB: replay_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      NODE_ENV: test
+      TEST_FORWARDED_REPLAY_DATABASE_URL: postgresql://postgres:test-only-password@localhost:5432/replay_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci > install.log 2>&1
+      - run: npx prisma generate > prisma.log 2>&1
+      - name: Targeted security regression and coverage
+        id: targeted
+        continue-on-error: true
+        run: >-
+          npx jest --runInBand --forceExit --runTestsByPath
+          src/middleware/requireAuth.test.ts src/services/forwardedIdentityReplayStore.test.ts
+          tests/integration/requireAuth.test.ts tests/integration/forwardedIdentityReplayStore.test.ts
+          --coverage --collectCoverageFrom=src/middleware/requireAuth.ts
+          --collectCoverageFrom=src/services/forwardedIdentityReplayStore.ts
+          > targeted.log 2>&1
+      - name: Lint
+        continue-on-error: true
+        run: npm run lint > lint.log 2>&1
+      - name: Typecheck
+        continue-on-error: true
+        run: npm run typecheck > typecheck.log 2>&1
+      - name: Build
+        continue-on-error: true
+        run: npm run build > build.log 2>&1
+      - name: Full suite
+        continue-on-error: true
+        run: npm test -- --runInBand > full-test.log 2>&1
+      - name: Migration policy
+        continue-on-error: true
+        run: CHECKSUM_CI_SKIP_MISSING=1 npx tsx scripts/check-migrations.ts > migrations.log 2>&1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: validation-1493
+          path: |
+            *.log
+            coverage/coverage-final.json
+      - name: Enforce security tests
+        if: always()
+        env:
+          RESULT: ${{ steps.targeted.outcome }}
+        run: test "$RESULT" = success
